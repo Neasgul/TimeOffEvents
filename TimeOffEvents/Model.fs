@@ -72,8 +72,17 @@ module Logic =
 
         events |> Seq.fold folder Map.empty
 
-    let overlapWithAnyRequest (previousRequests: TimeOffRequest seq) request =
-        false //TODO
+    let overlapWithAnyRequest (previousRequests: TimeOffRequest seq) (request: TimeOffRequest) =
+        let mutable returnValue = false
+        for previousRequest in previousRequests do
+            if request.Start.Date > previousRequest.Start.Date && request.Start.Date < previousRequest.End.Date then
+                returnValue <- true
+            elif request.Start.Date.Equals previousRequest.End.Date && request.Start.HalfDay.Equals previousRequest.End.HalfDay then
+                returnValue <- true
+            elif request.Start.Date.Equals previousRequest.Start.Date && not (previousRequest.End.Date.Equals previousRequest.Start.Date) then
+                returnValue <- true
+                
+        returnValue
 
     let createRequest previousRequests request =
         if overlapWithAnyRequest previousRequests request then
