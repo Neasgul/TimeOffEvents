@@ -21,8 +21,8 @@ let creationTests =
       let request = {
         UserId = 1
         RequestId = Guid.Empty
-        Start = { Date = DateTime(2017, 12, 30); HalfDay = AM }
-        End = { Date = DateTime(2017, 12, 30); HalfDay = PM } }
+        Start = { Date = DateTime(2018, 12, 30); HalfDay = AM }
+        End = { Date = DateTime(2018, 12, 30); HalfDay = PM } }
 
       Given [ ]
       |> When (RequestTimeOff request)

@@ -1,2 +1,4 @@
 FSharp.Core
 Expecto
+Newtonsoft.Json
+Suave

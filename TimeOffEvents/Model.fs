@@ -2,6 +2,21 @@
 
 open System
 open EventStorage
+open Suave
+open Suave.Operators
+open Suave.Http
+open Suave.Successful
+open Newtonsoft.Json
+open Newtonsoft.Json.Serialization
+open Suave
+open Suave.Operators
+open Suave.Http
+open Suave.Successful
+
+type Repository<'a> = {
+    Create : 'a -> 'a
+}
+
 
 type User =
     | Employee of int
@@ -119,3 +134,67 @@ module Logic =
         | ValidateRequest (_, requestId) ->
             let requestState = defaultArg (userRequests.TryFind requestId) NotCreated
             validateRequest requestState
+
+module JsonConvert =
+    let JSON v =
+        let jsonSerializerSettings = new JsonSerializerSettings()
+        jsonSerializerSettings.ContractResolver <- new CamelCasePropertyNamesContractResolver()
+
+        JsonConvert.SerializeObject(v, jsonSerializerSettings)
+        |> OK
+        >=> Writers.setMimeType "application/json; charset=utf-8"
+
+    let fromJson<'a> json =
+        JsonConvert.DeserializeObject(json, typeof<'a>) :?> 'a
+
+module Router =
+    open Suave.RequestErrors
+    open Suave.Filters
+    open Suave.Utils.Collections
+
+    let getResourceFromReq<'a> (req : HttpRequest) =
+        let getString rawForm = System.Text.Encoding.UTF8.GetString(rawForm)
+        req.rawForm |> getString |> JsonConvert.fromJson<'a>
+    
+    let rest resourceName repository =
+
+        let resourcePath = "/" + resourceName
+        let resourceIdPath = new PrintfFormat<(int -> string),unit,string,string,int>(resourcePath + "/%d")
+
+        let badRequest = BAD_REQUEST "Resource not found"
+
+      
+
+        choose [
+            path resourcePath >=> choose [
+                POST >=> request (getResourceFromReq >> repository.Create >> JsonConvert.JSON)
+            ]
+        ]
+
+module Db =
+    let store = InMemoryStore.Create<UserId, RequestEvent>()
+
+    let createRequest request =
+        let newRequest = { UserId = request.UserId
+                           RequestId = Guid.NewGuid();
+                           Start = request.Start
+                           End = request.End
+                         }
+        let command = Command.RequestTimeOff newRequest
+        let result = Logic.handleCommand store command
+        let seqEvents = seq {
+                let command = Command.RequestTimeOff newRequest
+                let result = Logic.handleCommand store command
+                match result with
+                    | Ok events ->
+                        for event in events do
+                            let stream = store.GetStream event.Request.UserId
+                            stream.Append [event]
+                            if event.Request.RequestId = newRequest.RequestId then yield event
+                    | Error e -> printfn "Error: %s" e
+            }
+        let result = Seq.toArray seqEvents
+        if result.Length > 0 then 
+            Console.WriteLine result.[0]
+        
+        request
