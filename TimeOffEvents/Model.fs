@@ -13,9 +13,7 @@ open Suave.Operators
 open Suave.Http
 open Suave.Successful
 
-type Repository<'a> = {
-    Create : 'a -> 'a
-}
+
 
 
 type User =
@@ -40,34 +38,42 @@ type TimeOffRequest = {
 
 type Command =
     | RequestTimeOff of TimeOffRequest
+    | CancelRequest of UserId * Guid
     | ValidateRequest of UserId * Guid with
     member this.UserId =
         match this with
         | RequestTimeOff request -> request.UserId
         | ValidateRequest (userId, _) -> userId
+        | CancelRequest (userId, _) -> userId
+
 
 type RequestEvent =
     | RequestCreated of TimeOffRequest
+    | RequestCancelled of TimeOffRequest
     | RequestValidated of TimeOffRequest with
     member this.Request =
         match this with
         | RequestCreated request -> request
         | RequestValidated request -> request
+        | RequestCancelled request -> request
 
 module Logic =
 
     type RequestState =
         | NotCreated
+        | Cancelled of TimeOffRequest
         | PendingValidation of TimeOffRequest
         | Validated of TimeOffRequest with
         member this.Request =
             match this with
             | NotCreated -> invalidOp "Not created"
             | PendingValidation request
+            | Cancelled request
             | Validated request -> request
         member this.IsActive =
             match this with
             | NotCreated -> false
+            | Cancelled _ -> false
             | PendingValidation _
             | Validated _ -> true
 
@@ -75,6 +81,7 @@ module Logic =
         match event with
         | RequestCreated request -> PendingValidation request
         | RequestValidated request -> Validated request
+        | RequestCancelled request -> Cancelled request
 
     let getRequestState events =
         events |> Seq.fold evolve NotCreated
@@ -86,6 +93,15 @@ module Logic =
             requests.Add (event.Request.RequestId, newState)
 
         events |> Seq.fold folder Map.empty
+    
+    let requestInPast (requestState: RequestState) = 
+        match requestState with
+        |  PendingValidation request ->
+            if request.Start.Date < DateTime.Now then true else false
+        |  Validated request ->
+            if request.Start.Date < DateTime.Now then true else false
+        |  _ -> false
+
 
     let overlapWithAnyRequest (previousRequests: TimeOffRequest seq) (request: TimeOffRequest) =
         let mutable returnValue = false
@@ -113,6 +129,17 @@ module Logic =
             Ok [RequestValidated request]
         | _ ->
             Error "Request cannot be validated"
+    
+    let cancelRequest requestState =
+        if requestInPast requestState then
+            Error "Request cannot be cancelled since it's in the past"
+        else
+        match requestState with
+        | Validated request
+        | PendingValidation request ->
+            Ok [RequestCancelled request]
+        | _ ->
+            Error "Request cannot be cancelled"
 
     let handleCommand (store: IStore<UserId, RequestEvent>) (command: Command) =
         let userId = command.UserId
@@ -134,6 +161,17 @@ module Logic =
         | ValidateRequest (_, requestId) ->
             let requestState = defaultArg (userRequests.TryFind requestId) NotCreated
             validateRequest requestState
+            
+        | CancelRequest(_, requestId) -> 
+            let requestState = defaultArg (userRequests.TryFind requestId) NotCreated
+            cancelRequest requestState
+
+open Logic
+
+type Repository<'a> = {
+    Create : 'a -> 'a
+    GetById : int -> Map<System.Guid, Logic.RequestState> option
+}
 
 module JsonConvert =
     let JSON v =
@@ -162,6 +200,12 @@ module Router =
         let resourceIdPath = new PrintfFormat<(int -> string),unit,string,string,int>(resourcePath + "/%d")
 
         let badRequest = BAD_REQUEST "Resource not found"
+        let handleResource requestError = function
+        | Some r -> r |> JsonConvert.JSON
+        | _ -> requestError
+
+        let getResourceById =
+            repository.GetById >> handleResource (NOT_FOUND "Resource not found")
 
       
 
@@ -169,10 +213,38 @@ module Router =
             path resourcePath >=> choose [
                 POST >=> request (getResourceFromReq >> repository.Create >> JsonConvert.JSON)
             ]
+            GET >=> pathScan resourceIdPath getResourceById
         ]
 
 module Db =
     let store = InMemoryStore.Create<UserId, RequestEvent>()
+
+    let updateRequest request = 
+        true
+    
+    let dummyGetById request = 
+        None
+
+    let validateRequest request = 
+        let user_id = request.UserId
+        let guid = request.RequestId
+
+        let command = Command.ValidateRequest (user_id, guid)
+        let result = Logic.handleCommand store command
+        let seqEvents = seq {
+                match result with
+                    | Ok events ->
+                        for event in events do
+                            let stream = store.GetStream event.Request.UserId
+                            stream.Append [event]
+                            if event.Request.RequestId = guid then yield event
+                    | Error e -> printfn "Error: %s" e
+            }
+        let result = Seq.toArray seqEvents
+        if result.Length > 0 then 
+            Console.WriteLine result.[0]
+        
+        request
 
     let createRequest request =
         let newRequest = { UserId = request.UserId
@@ -183,8 +255,6 @@ module Db =
         let command = Command.RequestTimeOff newRequest
         let result = Logic.handleCommand store command
         let seqEvents = seq {
-                let command = Command.RequestTimeOff newRequest
-                let result = Logic.handleCommand store command
                 match result with
                     | Ok events ->
                         for event in events do
@@ -197,4 +267,32 @@ module Db =
         if result.Length > 0 then 
             Console.WriteLine result.[0]
         
+        newRequest
+
+    let getUserRequests userId =
+        let stream = store.GetStream userId
+        let seq = stream.ReadAll()
+
+        Some (getAllRequests seq)
+
+    let cancelRequest request =
+        let user_id = request.UserId
+        let guid = request.RequestId
+
+        let command = Command.CancelRequest (user_id, guid)
+        let result = Logic.handleCommand store command
+        let seqEvents = seq {
+                match result with
+                    | Ok events ->
+                        for event in events do
+                            let stream = store.GetStream event.Request.UserId
+                            stream.Append [event]
+                            if event.Request.RequestId = guid then yield event
+                    | Error e -> printfn "Error: %s" e
+            }
+        let result = Seq.toArray seqEvents
+        if result.Length > 0 then 
+            Console.WriteLine result.[0]
+        
         request
+        

@@ -13,17 +13,23 @@ module App =
 
     [<EntryPoint>]
     let main argv =
-        let commandWebPart = {
+        let timeOff = Router.rest "timeOff" {
             Create = Db.createRequest
+            GetById = Db.getUserRequests
         }
 
-        let app =
-          choose [
-                Router.rest "test" commandWebPart
-                Router.rest "/test" commandWebPart
-                RequestErrors.NOT_FOUND "Found no handlers"
-          ]
+        let cancelTimeOff = Router.rest "cancelTimeOff" {
+            Create = Db.cancelRequest
+            GetById = Db.dummyGetById
+        }
 
+        let validateTimeOff = Router.rest "manager/validateTimeOff" {
+            Create = Db.validateRequest
+            GetById = Db.dummyGetById
+        }
+
+       
+        let app = choose[timeOff;cancelTimeOff;validateTimeOff; RequestErrors.NOT_FOUND "Found no handlers"]
         startWebServer defaultConfig app
 
         0
