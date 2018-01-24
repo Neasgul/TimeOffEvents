@@ -39,42 +39,59 @@ type TimeOffRequest = {
 type Command =
     | RequestTimeOff of TimeOffRequest
     | CancelRequest of UserId * Guid
+    | DenyRequest of UserId * Guid
+    | ValidateCancelRequest of UserId * Guid
+    | DenyCancelRequest of UserId * Guid
     | ValidateRequest of UserId * Guid with
     member this.UserId =
         match this with
         | RequestTimeOff request -> request.UserId
         | ValidateRequest (userId, _) -> userId
         | CancelRequest (userId, _) -> userId
+        | DenyRequest (userId, _) -> userId
+        | DenyCancelRequest (userId, _) -> userId
+        | ValidateCancelRequest (userId, _) -> userId
 
 
 type RequestEvent =
     | RequestCreated of TimeOffRequest
     | RequestCancelled of TimeOffRequest
+    | AskCancelRequest of TimeOffRequest
+    | RequestDenied of TimeOffRequest
     | RequestValidated of TimeOffRequest with
     member this.Request =
         match this with
         | RequestCreated request -> request
         | RequestValidated request -> request
         | RequestCancelled request -> request
+        | AskCancelRequest request -> request
+        | RequestDenied request -> request
 
 module Logic =
+
 
     type RequestState =
         | NotCreated
         | Cancelled of TimeOffRequest
         | PendingValidation of TimeOffRequest
+        | AskCancel of TimeOffRequest
+        | Refused of TimeOffRequest
         | Validated of TimeOffRequest with
         member this.Request =
             match this with
             | NotCreated -> invalidOp "Not created"
             | PendingValidation request
             | Cancelled request
+            | AskCancel request
+            | Refused request
             | Validated request -> request
         member this.IsActive =
             match this with
             | NotCreated -> false
+            | Refused _
             | Cancelled _ -> false
             | PendingValidation _
+            | AskCancel _
             | Validated _ -> true
 
     let evolve _ event =
@@ -82,6 +99,8 @@ module Logic =
         | RequestCreated request -> PendingValidation request
         | RequestValidated request -> Validated request
         | RequestCancelled request -> Cancelled request
+        | AskCancelRequest request -> AskCancel request
+        | RequestDenied request -> Refused request
 
     let getRequestState events =
         events |> Seq.fold evolve NotCreated
@@ -129,10 +148,36 @@ module Logic =
             Ok [RequestValidated request]
         | _ ->
             Error "Request cannot be validated"
+
+    let validateCancelRequest requestState =
+        match requestState with
+        | AskCancel request ->
+            Ok [RequestCancelled request]
+        | _ ->
+            Error "Request isn't in status AskCancel, therefore you cannot accept cancelling it"
+
+    let denyCancelRequest requestState =
+        match requestState with
+        | AskCancel request ->
+            Ok [RequestValidated request]
+        | _ ->
+            Error "Request isn't in status AskCancel, therefore you cannot deny cancelling it"
+    
+    let denyRequest requestState =
+        match requestState with
+        | PendingValidation request ->
+            Ok [RequestDenied request]
+        | _ ->
+            Error "Request cannot be denied"
     
     let cancelRequest requestState =
         if requestInPast requestState then
-            Error "Request cannot be cancelled since it's in the past"
+            match requestState with
+            | Validated request
+            | PendingValidation request ->
+                Ok [AskCancelRequest request]
+            | _ ->
+                Error "Cannot ask to cancel request"
         else
         match requestState with
         | Validated request
@@ -157,7 +202,9 @@ module Logic =
                 |> Seq.map (fun state -> state.Request)
 
             createRequest activeRequests request
-
+        | DenyRequest (_, requestId) ->
+            let requestState = defaultArg (userRequests.TryFind requestId) NotCreated
+            denyRequest requestState
         | ValidateRequest (_, requestId) ->
             let requestState = defaultArg (userRequests.TryFind requestId) NotCreated
             validateRequest requestState
@@ -165,6 +212,12 @@ module Logic =
         | CancelRequest(_, requestId) -> 
             let requestState = defaultArg (userRequests.TryFind requestId) NotCreated
             cancelRequest requestState
+        | ValidateCancelRequest(_, requestId) -> 
+            let requestState = defaultArg (userRequests.TryFind requestId) NotCreated
+            validateCancelRequest requestState
+        | DenyCancelRequest(_, requestId) -> 
+            let requestState = defaultArg (userRequests.TryFind requestId) NotCreated
+            denyCancelRequest requestState
 
 open Logic
 
@@ -224,12 +277,74 @@ module Db =
     
     let dummyGetById request = 
         None
+    
+    let denyRequest request = 
+        let user_id = request.UserId
+        let guid = request.RequestId
 
+        let command = Command.DenyRequest (user_id, guid)
+        let result = Logic.handleCommand store command
+        let seqEvents = seq {
+                match result with
+                    | Ok events ->
+                        for event in events do
+                            let stream = store.GetStream event.Request.UserId
+                            stream.Append [event]
+                            if event.Request.RequestId = guid then yield event
+                    | Error e -> printfn "Error: %s" e
+            }
+        let result = Seq.toArray seqEvents
+        if result.Length > 0 then 
+            Console.WriteLine result.[0]
+        
+        request
     let validateRequest request = 
         let user_id = request.UserId
         let guid = request.RequestId
 
         let command = Command.ValidateRequest (user_id, guid)
+        let result = Logic.handleCommand store command
+        let seqEvents = seq {
+                match result with
+                    | Ok events ->
+                        for event in events do
+                            let stream = store.GetStream event.Request.UserId
+                            stream.Append [event]
+                            if event.Request.RequestId = guid then yield event
+                    | Error e -> printfn "Error: %s" e
+            }
+        let result = Seq.toArray seqEvents
+        if result.Length > 0 then 
+            Console.WriteLine result.[0]
+        
+        request
+
+    let validateCancelRequest request = 
+        let user_id = request.UserId
+        let guid = request.RequestId
+
+        let command = Command.ValidateCancelRequest (user_id, guid)
+        let result = Logic.handleCommand store command
+        let seqEvents = seq {
+                match result with
+                    | Ok events ->
+                        for event in events do
+                            let stream = store.GetStream event.Request.UserId
+                            stream.Append [event]
+                            if event.Request.RequestId = guid then yield event
+                    | Error e -> printfn "Error: %s" e
+            }
+        let result = Seq.toArray seqEvents
+        if result.Length > 0 then 
+            Console.WriteLine result.[0]
+        
+        request
+
+    let denyCancelRequest request = 
+        let user_id = request.UserId
+        let guid = request.RequestId
+
+        let command = Command.DenyCancelRequest (user_id, guid)
         let result = Logic.handleCommand store command
         let seqEvents = seq {
                 match result with
@@ -295,4 +410,4 @@ module Db =
             Console.WriteLine result.[0]
         
         request
-        
+    

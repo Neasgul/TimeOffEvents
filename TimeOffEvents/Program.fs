@@ -28,8 +28,23 @@ module App =
             GetById = Db.dummyGetById
         }
 
+        let denyTimeOff = Router.rest "manager/denyTimeOff" {
+            Create = Db.denyRequest
+            GetById = Db.dummyGetById
+        }
+
+        let validateCancelTimeOff = Router.rest "manager/validateCancelRequest" {
+            Create = Db.validateCancelRequest
+            GetById = Db.dummyGetById
+        }
+
+        let denyCancelTimeOff = Router.rest "manager/denyCancelRequest" {
+            Create = Db.denyCancelRequest
+            GetById = Db.dummyGetById
+        }
+
        
-        let app = choose[timeOff;cancelTimeOff;validateTimeOff; RequestErrors.NOT_FOUND "Found no handlers"]
+        let app = choose[timeOff;cancelTimeOff;validateTimeOff;denyTimeOff;validateCancelTimeOff;denyCancelTimeOff; RequestErrors.NOT_FOUND "Found no handlers"]
         startWebServer defaultConfig app
 
         0
